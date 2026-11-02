@@ -373,3 +373,38 @@ def test_failed_action_write_preserves_pending_job_and_allows_retry(tmp_path):
             (job, action.incident_id, action.kind, action.reason)]
         assert db.execute("SELECT event,actor FROM audit ORDER BY rowid").fetchall() == [
             ("proposed", "planner"), ("completed", "reviewer")]
+
+
+@pytest.mark.parametrize("approve,status", [(True, "completed"), (False, "rejected")])
+def test_failed_decision_commit_preserves_pending_job_and_allows_retry(
+    tmp_path, monkeypatch, approve, status,
+):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    job = service.propose(action)
+    before = service.get(job)
+    connect = sqlite3.connect
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", lambda *args, **kwargs: connect(
+            *args, **{**kwargs, "timeout": 0}))
+        # A real reader permits writes but blocks the final commit.
+        with connect(service.path) as reader:
+            reader.execute("BEGIN")
+            reader.execute("SELECT * FROM jobs").fetchall()
+            with pytest.raises(sqlite3.OperationalError) as exc:
+                service.decide(job, approve, "reviewer")
+            assert exc.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+    assert service.get(job) == before
+    with connect(service.path) as db:
+        assert db.execute("SELECT * FROM incident_actions").fetchall() == []
+        assert db.execute("SELECT job_id,event,actor FROM audit").fetchall() == [
+            (job, "proposed", "planner")]
+    service.decide(job, approve, "reviewer")
+    assert service.get(job)["status"] == status
+    with pytest.raises(ValueError, match="already decided"):
+        service.decide(job, approve, "reviewer")
+    with connect(service.path) as db:
+        assert db.execute("SELECT * FROM incident_actions").fetchall() == (
+            [(job, action.incident_id, action.kind, action.reason)] if approve else [])
+        assert db.execute("SELECT job_id,event,actor FROM audit ORDER BY rowid").fetchall() == [
+            (job, "proposed", "planner"), (job, status, "reviewer")]
