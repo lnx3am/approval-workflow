@@ -162,6 +162,40 @@ def test_concurrent_decisions_execute_and_audit_once(tmp_path):
             ("proposed", "planner"), ("completed", winners[0])]
 
 
+def test_conflicting_concurrent_decisions_persist_only_the_winner(tmp_path):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    job = service.propose(action)
+    ready = Barrier(2)
+
+    def decide(approve, actor):
+        ready.wait(timeout=5)
+        try:
+            result = service.decide(job, approve, actor)
+            return approve, actor, result
+        except ValueError as exc:
+            assert str(exc) == "job already decided"
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(decide, True, "approver"),
+                   pool.submit(decide, False, "rejecter")]
+        outcomes = [future.result(timeout=15) for future in futures]
+    winners = [outcome for outcome in outcomes if outcome is not None]
+    assert len(winners) == 1
+    approved, actor, result = winners[0]
+    status = "completed" if approved else "rejected"
+    assert service.get(job) == {
+        "id": job, "action": action.model_dump(), "status": status, "result": result,
+    }
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT event,actor FROM audit ORDER BY rowid").fetchall() == [
+            ("proposed", "planner"), (status, actor)]
+        assert db.execute("SELECT job_id,incident_id,kind,reason FROM incident_actions").fetchall() == (
+            [(job, action.incident_id, action.kind, action.reason)] if approved else []
+        )
+
+
 def test_proposal_requires_actor(tmp_path):
     service = Workflow(str(tmp_path / "approval.db"))
     action = Action(kind="add_note", incident_id=1, reason="Customer confirmed recovery")
