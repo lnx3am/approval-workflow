@@ -7,6 +7,38 @@ import pytest
 from approval_workflow.workflow import Action, RiskReview, Workflow
 
 
+@pytest.mark.parametrize("approve,status", [(True, "completed"), (False, "rejected")])
+def test_locked_database_preserves_pending_decision_and_allows_retry(
+    tmp_path, monkeypatch, approve, status,
+):
+    service = Workflow(str(tmp_path / "approval.db"))
+    job = service.propose(Action(kind="add_note", incident_id=7, reason="Recovery confirmed"))
+    before = service.get(job)
+    connect = sqlite3.connect
+    with monkeypatch.context() as patch:
+        patch.setattr(sqlite3, "connect", lambda *args, **kwargs: connect(
+            *args, **{**kwargs, "timeout": 0}))
+        patch.setattr("approval_workflow.workflow.graph.invoke", lambda *args, **kwargs:
+                      pytest.fail("a blocked decision must not execute the graph"))
+        with connect(service.path) as writer:
+            writer.execute("BEGIN IMMEDIATE")
+            with pytest.raises(sqlite3.OperationalError) as exc:
+                service.decide(job, approve, "reviewer")
+            assert exc.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
+        assert service.get(job) == before
+        with connect(service.path) as db:
+            assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
+            assert db.execute("SELECT event FROM audit").fetchall() == [("proposed",)]
+    service.decide(job, approve, "reviewer")
+    assert service.get(job)["status"] == status
+    with connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == int(approve)
+        assert db.execute("SELECT event,actor FROM audit ORDER BY rowid").fetchall() == [
+            ("proposed", "planner"), (status, "reviewer")]
+    with pytest.raises(ValueError, match="job already decided"):
+        service.decide(job, not approve, "another-reviewer")
+
+
 def test_unknown_risk_review_fields_cannot_create_proposal(tmp_path):
     from types import SimpleNamespace
 
