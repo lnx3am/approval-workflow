@@ -39,6 +39,35 @@ def test_locked_database_preserves_pending_decision_and_allows_retry(
         service.decide(job, not approve, "another-reviewer")
 
 
+def test_graph_failure_preserves_pending_job_and_allows_retry(tmp_path, monkeypatch):
+    service = Workflow(str(tmp_path / "approval.db"))
+    job = service.propose(Action(kind="add_note", incident_id=7, reason="Recovery confirmed"))
+    before = service.get(job)
+
+    def fail_execution(state):
+        raise RuntimeError("graph execution failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("approval_workflow.workflow.graph.invoke", fail_execution)
+        with pytest.raises(RuntimeError, match="graph execution failed"):
+            service.decide(job, True, "reviewer")
+    assert service.get(job) == before
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
+        assert db.execute("SELECT event,actor FROM audit ORDER BY rowid").fetchall() == [
+            ("proposed", "planner")]
+
+    service.decide(job, True, "reviewer")
+    assert service.get(job)["status"] == "completed"
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT job_id,incident_id,kind,reason FROM incident_actions").fetchall() == [
+            (job, 7, "add_note", "Recovery confirmed")]
+        assert db.execute("SELECT event,actor FROM audit ORDER BY rowid").fetchall() == [
+            ("proposed", "planner"), ("completed", "reviewer")]
+    with pytest.raises(ValueError, match="job already decided"):
+        service.decide(job, True, "another-reviewer")
+
+
 def test_unknown_risk_review_fields_cannot_create_proposal(tmp_path):
     from types import SimpleNamespace
 
