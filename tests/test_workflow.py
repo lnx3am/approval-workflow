@@ -7,6 +7,36 @@ import pytest
 from approval_workflow.workflow import Action, RiskReview, Workflow
 
 
+@pytest.mark.parametrize("approve", [True, False])
+def test_deciding_one_job_preserves_another_pending_job(tmp_path, approve):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    first = service.propose(action, actor="first-planner")
+    second = service.propose(action, actor="second-planner")
+    pending = service.get(second)
+
+    service.decide(first, approve, "first-reviewer")
+    assert service.get(second) == pending
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT event,actor FROM audit WHERE job_id=?", (second,)).fetchall() == [
+            ("proposed", "second-planner")]
+        assert db.execute("SELECT job_id FROM incident_actions").fetchall() == (
+            [(first,)] if approve else [])
+
+    service.decide(second, not approve, "second-reviewer")
+    assert service.get(first)["status"] == ("completed" if approve else "rejected")
+    assert service.get(second)["status"] == ("rejected" if approve else "completed")
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT job_id FROM incident_actions").fetchall() == [
+            (first if approve else second,)]
+        assert db.execute("SELECT job_id,event,actor FROM audit ORDER BY rowid").fetchall() == [
+            (first, "proposed", "first-planner"),
+            (second, "proposed", "second-planner"),
+            (first, "completed" if approve else "rejected", "first-reviewer"),
+            (second, "rejected" if approve else "completed", "second-reviewer"),
+        ]
+
+
 @pytest.mark.parametrize("approve,status", [(True, "completed"), (False, "rejected")])
 def test_locked_database_preserves_pending_decision_and_allows_retry(
     tmp_path, monkeypatch, approve, status,
