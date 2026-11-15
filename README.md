@@ -34,6 +34,7 @@ python -m approval_workflow.cli --db approval.db decide JOB_ID --approve --actor
 ```
 
 Substitute the printed job ID. For a live model proposal, use `propose --request 'Add a recovery note to incident 7'` with `OPENAI_API_KEY` configured. Try a second decision on the same job; it is rejected.
+Pass `propose --actor operator@example.test` with either proposal mode to record the proposer in the audit log; the default remains `planner`. Blank identities are rejected before database or model work. This label is attribution, not authentication, and does not change the risk review or human approval requirements.
 
 Use either a nonblank `--request` or all three manual fields (`--kind`, `--incident-id`, and `--reason`). Mixed modes and missing fields are rejected before creating a database or calling the model.
 

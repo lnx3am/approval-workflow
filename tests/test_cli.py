@@ -125,7 +125,8 @@ def test_invalid_decision_flags_do_not_create_database(tmp_path, monkeypatch, ca
 
 
 @pytest.mark.parametrize("use_model", [False, True])
-def test_valid_proposal_modes(tmp_path, monkeypatch, capsys, use_model):
+@pytest.mark.parametrize("actor", [None, "operator@example.test"])
+def test_valid_proposal_modes(tmp_path, monkeypatch, capsys, use_model, actor):
     from approval_workflow.workflow import Action, RiskReview, Workflow
 
     action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
@@ -145,6 +146,8 @@ def test_valid_proposal_modes(tmp_path, monkeypatch, capsys, use_model):
     path = tmp_path / "approval.db"
     flags = (["--request", "Add a recovery note"] if use_model else
              ["--kind", "add_note", "--incident-id", "7", "--reason", action.reason])
+    if actor is not None:
+        flags.extend(["--actor", actor])
     monkeypatch.setattr("sys.argv", ["approval", "--db", str(path), "propose", *flags])
     main()
     job_id = capsys.readouterr().out.strip()
@@ -152,6 +155,36 @@ def test_valid_proposal_modes(tmp_path, monkeypatch, capsys, use_model):
     assert job["status"] == "pending"
     assert job["action"] == action.model_dump()
     assert calls == (["Add a recovery note", "reviewed"] if use_model else [])
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT actor FROM audit WHERE job_id=? AND event='proposed'",
+                          (job_id,)).fetchall() == [(actor or "planner",)]
+        if use_model:
+            assert db.execute("SELECT actor FROM audit WHERE job_id=? AND event LIKE 'reviewed:%'",
+                              (job_id,)).fetchall() == [("risk_reviewer",)]
+
+
+@pytest.mark.parametrize("actor", ["", "   ", "\t\n"])
+@pytest.mark.parametrize("use_model", [False, True])
+def test_blank_proposer_has_no_database_or_model_side_effects(
+    tmp_path, monkeypatch, capsys, actor, use_model,
+):
+    def unexpected_call(*args):
+        pytest.fail("blank proposer must not call the model")
+
+    monkeypatch.setattr("approval_workflow.cli.plan_live", unexpected_call)
+    monkeypatch.setattr("approval_workflow.cli.review_live", unexpected_call)
+    path = tmp_path / "approval.db"
+    flags = (["--request", "Add a recovery note"] if use_model else
+             ["--kind", "add_note", "--incident-id", "7", "--reason", "Recovery confirmed"])
+    monkeypatch.setattr("sys.argv", ["approval", "--db", str(path), "propose",
+                                    *flags, "--actor", actor])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "--actor cannot be blank" in captured.err
+    assert not path.exists()
 
 
 @pytest.mark.parametrize("flag,status", [("--approve", "completed"), ("--reject", "rejected")])

@@ -18,6 +18,7 @@ def main() -> None:
     propose.add_argument("--kind", choices=["add_note", "close_incident"])
     propose.add_argument("--incident-id", type=int)
     propose.add_argument("--reason")
+    propose.add_argument("--actor", default="planner", help="Proposer identity (default: planner)")
     decide = sub.add_parser("decide")
     decide.add_argument("job_id")
     decide.add_argument("--actor", required=True)
@@ -29,6 +30,8 @@ def main() -> None:
     args = parser.parse_args()
     action = None
     if args.command == "propose":
+        if not args.actor.strip():
+            parser.error("--actor cannot be blank")
         manual = (args.kind, args.incident_id, args.reason)
         if args.request is not None:
             if not args.request.strip():
@@ -52,7 +55,7 @@ def main() -> None:
         try:
             action = plan_live(args.request) if args.request else action
             review = review_live(action) if args.request else None
-            print(workflow.propose(action, review=review))
+            print(workflow.propose(action, actor=args.actor, review=review))
         except OpenAIError:
             parser.error("model provider request failed; check credentials and provider availability")
         except sqlite3.DatabaseError as exc:
