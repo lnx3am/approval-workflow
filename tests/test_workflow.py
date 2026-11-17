@@ -7,6 +7,22 @@ import pytest
 from approval_workflow.workflow import Action, RiskReview, Workflow
 
 
+def test_incident_id_must_fit_storage_before_proposal(tmp_path):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    with pytest.raises(ValueError):
+        Action(kind="add_note", incident_id=2**63, reason="Recovery confirmed")
+    with pytest.raises(ValueError):
+        service.propose(action.model_copy(update={"incident_id": 2**63}))
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+    job = service.propose(action.model_copy(update={"incident_id": 2**63 - 1}))
+    service.decide(job, True, "reviewer")
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT incident_id FROM incident_actions").fetchall() == [(2**63 - 1,)]
+
+
 @pytest.mark.parametrize("flag", ["true", "false", "yes", 0, 1])
 @pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
 def test_risk_review_rejects_coerced_flags_without_creating_proposal(tmp_path, flag):
