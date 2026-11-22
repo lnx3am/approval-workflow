@@ -17,7 +17,7 @@ The deterministic CLI path can propose an action without a model. The `--request
 Proposals revalidate actions and risk reviews before persisting them, including objects modified through Pydantic methods that bypass validation.
 Risk-review decisions require an actual boolean; strings and numbers are rejected instead of being coerced into a passing review.
 
-Pydantic limits the action vocabulary and incident ID. LangGraph illustrates typed state, conditional routing, and a bounded terminal path. SQLite holds jobs, audit events, and approved action records. The code is in `workflow.py` and the interface in `cli.py`.
+Pydantic limits the action vocabulary and incident ID. Incident IDs must be positive integers no greater than `2**63 - 1`, so every accepted proposal fits SQLite's integer storage when approved. LangGraph illustrates typed state, conditional routing, and a bounded terminal path. SQLite holds jobs, audit events, and approved action records. The code is in `workflow.py` and the interface in `cli.py`.
 
 ## Run and example
 

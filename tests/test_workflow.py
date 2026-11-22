@@ -7,6 +7,25 @@ import pytest
 from approval_workflow.workflow import Action, RiskReview, Workflow
 
 
+def test_largest_sqlite_incident_id_can_be_approved(tmp_path):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=2**63 - 1, reason="Recovery confirmed")
+    job = service.propose(action)
+    service.decide(job, True, "reviewer")
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT incident_id FROM incident_actions").fetchall() == [(2**63 - 1,)]
+
+
+def test_oversized_copied_incident_id_cannot_create_proposal(tmp_path):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    with pytest.raises(ValueError):
+        service.propose(action.model_copy(update={"incident_id": 2**63}))
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+        assert db.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
+
+
 @pytest.mark.parametrize("changes", [{"kind": "delete_incident"}, {"reason": "     "}])
 def test_invalid_stored_action_cannot_execute_or_consume_decision(tmp_path, monkeypatch, changes):
     import json
