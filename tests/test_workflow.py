@@ -7,6 +7,31 @@ import pytest
 from approval_workflow.workflow import Action, RiskReview, Workflow
 
 
+@pytest.mark.parametrize("changes", [{"kind": "delete_incident"}, {"reason": "     "}])
+def test_invalid_stored_action_cannot_execute_or_consume_decision(tmp_path, monkeypatch, changes):
+    import json
+
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    job = service.propose(action)
+    with sqlite3.connect(service.path) as db:
+        db.execute("UPDATE jobs SET action=? WHERE id=?",
+                   (json.dumps({**action.model_dump(), **changes}), job))
+    before = service.get(job)
+    with monkeypatch.context() as patch:
+        patch.setattr("approval_workflow.workflow.graph.invoke",
+                      lambda state: pytest.fail("invalid stored action must not reach execution"))
+        with pytest.raises(ValueError):
+            service.decide(job, True, "reviewer")
+    assert service.get(job) == before
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
+        assert db.execute("SELECT event,actor FROM audit").fetchall() == [("proposed", "planner")]
+        db.execute("UPDATE jobs SET action=? WHERE id=?", (action.model_dump_json(), job))
+    service.decide(job, True, "reviewer")
+    assert service.get(job)["status"] == "completed"
+
+
 @pytest.mark.parametrize("flag", ["true", "false", "yes", 0, 1])
 @pytest.mark.filterwarnings("ignore:Pydantic serializer warnings:UserWarning")
 def test_risk_review_rejects_coerced_flags_without_creating_proposal(tmp_path, flag):
