@@ -218,3 +218,42 @@ def test_rejected_model_review_is_usage_error_without_pending_job(tmp_path, monk
     with sqlite3.connect(path) as db:
         for table in ("jobs", "audit", "incident_actions"):
             assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("stage", ["plan_live", "review_live"])
+@pytest.mark.parametrize("error_kind", ["connection", "rate_limit", "configuration"])
+def test_provider_failure_is_usage_error_without_pending_job(
+    tmp_path, monkeypatch, capsys, stage, error_kind,
+):
+    import httpx
+    from openai import APIConnectionError, OpenAIError, RateLimitError
+
+    from approval_workflow.workflow import Action
+
+    request = httpx.Request("POST", "https://provider.example.test/responses")
+    error = {
+        "connection": APIConnectionError(request=request),
+        "rate_limit": RateLimitError("rate limited", response=httpx.Response(429, request=request),
+                                     body=None),
+        "configuration": OpenAIError("API key is required"),
+    }[error_kind]
+    monkeypatch.setattr("approval_workflow.cli.plan_live", lambda request:
+                        Action(kind="add_note", incident_id=7, reason="Recovery confirmed"))
+
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(f"approval_workflow.cli.{stage}", fail)
+    path = tmp_path / "approval.db"
+    monkeypatch.setattr("sys.argv", ["approval", "--db", str(path), "propose",
+                                    "--request", "Add a recovery note to incident 7"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "model provider request failed" in captured.err
+    assert "Traceback" not in captured.err
+    with sqlite3.connect(path) as db:
+        for table in ("jobs", "audit", "incident_actions"):
+            assert db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
