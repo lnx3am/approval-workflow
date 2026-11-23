@@ -1,6 +1,53 @@
+import sqlite3
+
 import pytest
 
 from approval_workflow.cli import main
+
+
+@pytest.mark.parametrize("command", ["propose", "show", "decide"])
+@pytest.mark.parametrize("failure", ["directory", "parent_file", "corrupt", "operation"])
+def test_database_failure_is_usage_error(tmp_path, monkeypatch, capsys, command, failure):
+    from approval_workflow.workflow import Action, Workflow
+
+    path = tmp_path / "approval.db"
+    job_id = "missing-job"
+    if failure == "directory":
+        path.mkdir()
+    elif failure == "parent_file":
+        path.write_text("not a directory")
+        path = path / "approval.db"
+    elif failure == "corrupt":
+        path.write_text("not a SQLite database")
+    else:
+        workflow = Workflow(str(path))
+        job_id = workflow.propose(Action(kind="add_note", incident_id=7,
+                                         reason="Recovery confirmed"))
+        with sqlite3.connect(path) as db:
+            if command == "show":
+                db.execute("DROP TABLE jobs")
+            else:
+                db.execute("CREATE TRIGGER fail_audit BEFORE INSERT ON audit "
+                           "BEGIN SELECT RAISE(ABORT, 'audit storage unavailable'); END")
+        monkeypatch.setattr("approval_workflow.cli.Workflow", lambda *args: workflow)
+    flags = (["--kind", "add_note", "--incident-id", "7", "--reason", "Recovery confirmed"]
+             if command == "propose" else [job_id])
+    if command == "decide":
+        flags += ["--approve", "--actor", "reviewer"]
+    monkeypatch.setattr("sys.argv", ["approval", "--db", str(path), command, *flags])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert f"cannot access workflow database {path}" in captured.err
+    assert "Traceback" not in captured.err
+    if failure == "operation" and command != "show":
+        assert workflow.get(job_id)["status"] == "pending"
+        with sqlite3.connect(path) as db:
+            assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
+            assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("incident_id,reason", [("0", "Recovery confirmed"),

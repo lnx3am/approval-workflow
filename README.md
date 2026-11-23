@@ -33,6 +33,8 @@ Substitute the printed job ID. For a live model proposal, use `propose --request
 
 Use either a nonblank `--request` or all three manual fields (`--kind`, `--incident-id`, and `--reason`). Mixed modes and missing fields are rejected before creating a database or calling the model.
 
+Database path and SQLite failures produce CLI usage errors (exit 2) identifying the database, without printing a job ID or success result. Failed proposal or decision transactions roll back their changes, so a decision can be retried.
+
 ## Trade-offs, limitations, and next production steps
 
 This is an auditable command ledger, not an incident management integration: approved actions are recorded in `incident_actions` but are not sent to a real incident platform. The CLI approver name is not authentication. A production system would bind approval to a logged-in principal, add expiry and role checks, validate the incident against a source of truth, and dispatch approved commands through an outbox with idempotent retries. Add a persistent LangGraph checkpointer when the workflow has long-running graph state that cannot be reconstructed from the business record.

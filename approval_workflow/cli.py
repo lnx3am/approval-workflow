@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sqlite3
 
 from pydantic import ValidationError
 
@@ -42,24 +43,32 @@ def main() -> None:
                 parser.error(str(exc))
     if args.command == "decide" and not args.actor.strip():
         parser.error("--actor cannot be blank")
-    workflow = Workflow(args.db)
+    try:
+        workflow = Workflow(args.db)
+    except (OSError, sqlite3.Error) as exc:
+        parser.error(f"cannot access workflow database {args.db}: {exc}")
     if args.command == "propose":
         try:
             action = plan_live(args.request) if args.request else action
             review = review_live(action) if args.request else None
-            print(workflow.propose(action, review=review))
+            output = workflow.propose(action, review=review)
+        except (OSError, sqlite3.Error) as exc:
+            parser.error(f"cannot access workflow database {args.db}: {exc}")
         except ValueError as exc:
             parser.error(str(exc))
     else:
         try:
             if args.command == "decide":
-                print(workflow.decide(args.job_id, args.approve, args.actor))
+                output = workflow.decide(args.job_id, args.approve, args.actor)
             else:
-                print(json.dumps(workflow.get(args.job_id), indent=2))
+                output = json.dumps(workflow.get(args.job_id), indent=2)
+        except (OSError, sqlite3.Error) as exc:
+            parser.error(f"cannot access workflow database {args.db}: {exc}")
         except KeyError:
             parser.error(f"job not found: {args.job_id}")
         except ValueError as exc:
             parser.error(str(exc))
+    print(output)
 
 
 if __name__ == "__main__":
