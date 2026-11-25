@@ -12,6 +12,8 @@ The deterministic CLI path can propose an action without a model. The `--request
 
 `Workflow.decide` requires a boolean decision; strings such as `"false"`, integers, and other values are rejected before changing the job or audit log.
 
+Actions reject unknown fields before proposals are persisted or stored actions are approved. An invalid stored action leaves the job pending and can still be rejected.
+
 ## Concepts and choices
 
 Proposals revalidate actions and risk reviews before persisting them, including objects modified through Pydantic methods that bypass validation.

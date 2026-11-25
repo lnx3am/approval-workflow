@@ -280,3 +280,26 @@ def test_incident_ids_cannot_be_coerced_into_proposals(tmp_path, incident_id):
         assert db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
         assert db.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 0
     assert service.get(service.propose(action))["action"]["incident_id"] == 7
+
+
+def test_unknown_action_fields_are_rejected():
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        Action(kind="add_note", incident_id=7, reason="Recovery confirmed", close_incident=True)
+
+
+def test_stored_action_with_unknown_fields_cannot_execute(tmp_path):
+    import json
+
+    service = Workflow(str(tmp_path / "approval.db"))
+    job = service.propose(Action(kind="add_note", incident_id=7, reason="Recovery confirmed"))
+    with sqlite3.connect(service.path) as db:
+        action = service.get(job)["action"]
+        action["close_incident"] = True
+        db.execute("UPDATE jobs SET action=? WHERE id=?", (json.dumps(action), job))
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        service.decide(job, True, "reviewer")
+    assert service.get(job)["status"] == "pending"
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
+        assert db.execute("SELECT event FROM audit").fetchall() == [("proposed",)]
+    assert service.decide(job, False, "reviewer") == "Rejected by approver"
