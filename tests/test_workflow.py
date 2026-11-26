@@ -303,3 +303,30 @@ def test_stored_action_with_unknown_fields_cannot_execute(tmp_path):
         assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
         assert db.execute("SELECT event FROM audit").fetchall() == [("proposed",)]
     assert service.decide(job, False, "reviewer") == "Rejected by approver"
+
+
+def test_execution_failure_leaves_pending_job_retryable(tmp_path, monkeypatch):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    job = service.propose(action)
+    before = service.get(job)
+
+    def fail_execution(state):
+        raise RuntimeError("execution unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("approval_workflow.workflow.graph.invoke", fail_execution)
+        with pytest.raises(RuntimeError, match="execution unavailable"):
+            service.decide(job, True, "reviewer")
+    assert Workflow(service.path).get(job) == before
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
+        assert db.execute("SELECT event,actor FROM audit").fetchall() == [("proposed", "planner")]
+
+    # A fresh workflow instance can retry without a duplicate effect or failed-decision audit.
+    Workflow(service.path).decide(job, True, "retry-reviewer")
+    assert service.get(job)["status"] == "completed"
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT job_id FROM incident_actions").fetchall() == [(job,)]
+        assert db.execute("SELECT event,actor FROM audit").fetchall() == [
+            ("proposed", "planner"), ("completed", "retry-reviewer")]
