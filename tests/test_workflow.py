@@ -7,6 +7,32 @@ import pytest
 from approval_workflow.workflow import Action, RiskReview, Workflow
 
 
+@pytest.mark.parametrize("failed_event", ["proposed", "reviewed: Recovery confirmed"])
+def test_proposal_audit_failure_rolls_back_job_and_can_retry(tmp_path, failed_event):
+    service = Workflow(str(tmp_path / "approval.db"))
+    action = Action(kind="add_note", incident_id=7, reason="Recovery confirmed")
+    existing_job = service.propose(action)
+    review = RiskReview(safe_to_propose=True, rationale="Recovery confirmed")
+    with sqlite3.connect(service.path) as db:
+        db.execute("CREATE TRIGGER fail_proposal_audit BEFORE INSERT ON audit "
+                   f"WHEN NEW.event='{failed_event}' "
+                   "BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
+    with pytest.raises(sqlite3.IntegrityError, match="audit unavailable"):
+        service.propose(action, review=review)
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT id,status FROM jobs").fetchall() == [(existing_job, "pending")]
+        assert db.execute("SELECT job_id,event,actor FROM audit").fetchall() == [
+            (existing_job, "proposed", "planner")]
+        assert db.execute("SELECT COUNT(*) FROM incident_actions").fetchone()[0] == 0
+        db.execute("DROP TRIGGER fail_proposal_audit")
+    retried_job = service.propose(action, review=review)
+    assert service.get(retried_job)["status"] == "pending"
+    with sqlite3.connect(service.path) as db:
+        assert db.execute("SELECT event,actor FROM audit WHERE job_id=? ORDER BY rowid",
+                          (retried_job,)).fetchall() == [
+            ("proposed", "planner"), ("reviewed: Recovery confirmed", "risk_reviewer")]
+
+
 def test_unknown_risk_review_fields_cannot_create_proposal(tmp_path):
     from types import SimpleNamespace
 
